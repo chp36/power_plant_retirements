@@ -78,90 +78,84 @@ df_plan['event_date'] = pd.to_datetime(
 df_plan['event_period'] = df_plan['event_date'].dt.to_period('M')
 df_plan = df_plan.dropna(subset=['event_period'])
 
-# ----------------- COMBINE -------------------
-df_combined = pd.concat([df_retire, df_plan], ignore_index=True)
-df_combined = df_combined.dropna(subset=['event_period', 'lat', 'lon', 'capacity_mwh'])
-df_combined = df_combined.sort_values(by='event_date')
+# --------------------------------------
+# --- Build animation dataset for df_retire ---
+# Get unique sorted retirement periods
+all_frames_retire = sorted(df_retire['event_period'].unique())
 
-# Combine all relevant periods from both datasets
-all_periods = sorted(
-    list(set(df_retire['event_period'].unique()).union(set(df_plan['event_period'].unique())))
-)
-all_timestamps = [p.to_timestamp() for p in all_periods]
+# Expand data: For each frame, include all plants and assign a status
+animation_rows_retire = []
 
-animation_rows = []
-
-# Create a dictionary to track the status of each plant across frames
-plant_status_dict = {}
-
-for current_date in all_timestamps:
-    current_period = current_date.to_period('M')
-
-    # Retirements: always show them, but switch status when retirement date passes
+for period in all_frames_retire:
+    current_date = period.to_timestamp()
     for _, row in df_retire.iterrows():
-        # Check if the plant has already been marked as "Retired"
-        if row['plant_name'] not in plant_status_dict:
-            plant_status_dict[row['plant_name']] = 'Operating'  # Initially, all plants are operating
-
-        # If the plant's retirement date has passed, update its status to "Retired"
-        if row['event_date'] <= current_date:
-            plant_status_dict[row['plant_name']] = 'Retired'
-
-        # Record the plant status for the current frame
-        animation_rows.append({
+        animation_rows_retire.append({
             'lat': row['lat'],
             'lon': row['lon'],
             'capacity_mwh': row['capacity_mwh'],
             'plant_name': row['plant_name'],
-            'technology': row['technology'],
             'event_date': row['event_date'],
-            'frame': str(current_period),
-            'status': plant_status_dict[row['plant_name']]
+            'technology': row['technology'],
+            'status': 'Retired' if row['event_date'] <= current_date else 'Operating',
+            'frame': str(period),
+            'source': 'df_retire'  # Mark this row as coming from df_retire
         })
 
-    # Installations: only show after installation date
+df_anim_retire = pd.DataFrame(animation_rows_retire)
+
+# --- Build animation dataset for df_plan ---
+# Get unique sorted operation periods for df_plan
+all_frames_plan = sorted(df_plan['event_period'].unique())
+
+# Expand data: For each frame, include all plants and assign a status
+animation_rows_plan = []
+
+for period in all_frames_plan:
+    current_date = period.to_timestamp()
     for _, row in df_plan.iterrows():
+        # Only show planned plants once their event_date has passed
         if row['event_date'] <= current_date:
-            animation_rows.append({
+            animation_rows_plan.append({
                 'lat': row['lat'],
                 'lon': row['lon'],
                 'capacity_mwh': row['capacity_mwh'],
                 'plant_name': row['plant_name'],
-                'technology': row['technology'],
                 'event_date': row['event_date'],
-                'frame': str(current_period),
-                'status': 'Planned'
+                'technology': row['technology'],
+                'status': 'Planned',  # They are "Planned" once they appear
+                'frame': str(period),
+                'source': 'df_plan'  # Mark this row as coming from df_plan
             })
 
-df_anim = pd.DataFrame(animation_rows)
+df_anim_plan = pd.DataFrame(animation_rows_plan)
 
-# ----------------- PLOT -------------------
+# --------------------------------------
+# Combine both animations into one DataFrame
+df_combined = pd.concat([df_anim_retire, df_anim_plan])
+
+# Plot map with both animations!
 fig = px.scatter_geo(
-    df_anim,
+    df_combined,
     lat='lat',
     lon='lon',
     size='capacity_mwh',
-    color='status',
+    color='status',  # Red if retired, green/blue if still operating
     animation_frame='frame',
     hover_name='plant_name',
     hover_data={
         'technology': True,
         'capacity_mwh': True,
-        'event_date': True,
         'lat': False,
         'lon': False,
+        'event_date': True,
+        'status': False,
         'frame': False
     },
     scope='usa',
-    title='U.S. Power Plant Installations and Retirements Over Time',
+    title='U.S. Power Plant Retirements and Planned Operations Over Time',
     size_max=20,
     opacity=0.7,
-    color_discrete_map={
-        'Operating': 'green',
-        'Retired': 'red',
-        'Planned': 'blue',
-        'Pending': 'lightblue'
-    }
+    color_discrete_map={'Retired': 'red', 'Operating': 'green', 'Planned': 'blue'}
 )
 
 fig.update_layout(
